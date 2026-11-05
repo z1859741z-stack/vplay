@@ -16,6 +16,8 @@ dependencies:
   liquid_glass_widgets: 0.18.4
   shared_preferences: ^2.3.0
   cached_network_image: ^3.4.0
+  screen_brightness: ^2.1.0
+  volume_controller: ^3.5.0
 
 dev_dependencies:
   flutter_test:
