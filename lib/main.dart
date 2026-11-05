@@ -36,16 +36,13 @@ class VPlayApp extends StatelessWidget {
 // ---------- 片源 ----------
 
 const List<Map<String, String>> kSources = [
-  {'name': '暴风', 'url': 'https://bfzyapi.com/api.php/provide/vod/'},
-  {'name': '360', 'url': 'https://360zy.com/api.php/provide/vod/'},
-  {'name': '无尽', 'url': 'https://api.wujinapi.me/api.php/provide/vod/'},
-  {'name': '最大', 'url': 'https://apizdzy.com/api.php/provide/vod/'},
-  {'name': '牛牛', 'url': 'https://api.niuniuzy.me/api.php/provide/vod/'},
+  {'name': '光速', 'url': 'https://api.guangsuapi.com/api.php/provide/vod/'},
   {'name': '红牛', 'url': 'https://www.hongniuzy2.com/api.php/provide/vod/'},
+  {'name': '360', 'url': 'https://360zy.com/api.php/provide/vod/'},
   {'name': '魔都', 'url': 'https://www.mdzyapi.com/api.php/provide/vod/'},
-  {'name': '极速', 'url': 'https://api.jisuapi.com/api.php/provide/vod/'},
-  {'name': '非凡', 'url': 'https://api.ffzyapi.com/api.php/provide/vod/'},
-  {'name': '樱花', 'url': 'https://yhzyapi.com/api.php/provide/vod/'},
+  {'name': '百度云', 'url': 'https://api.apibdzy.com/api.php/provide/vod/'},
+  {'name': '暴风', 'url': 'https://bfzyapi.com/api.php/provide/vod/'},
+  {'name': '无尽', 'url': 'https://api.wujinapi.me/api.php/provide/vod/'},
 ];
 
 const List<String> kMandarinMarkers = ['国语', '国配', '中文配音', '普通话', '中配', '国语版'];
@@ -160,7 +157,12 @@ List<PlayLine> parsePlayUrl(String playUrl) {
     for (final ep in rest.split('#')) {
       if (ep.trim().isEmpty) continue;
       final i = ep.indexOf('\$');
-      if (i < 0) continue;
+      if (i < 0) {
+        // 单集直链：没有集数名，整段就是播放地址（电影常见）
+        final url = ep.trim();
+        if (url.startsWith('http')) eps.add(Episode('正片', url));
+        continue;
+      }
       final name = ep.substring(0, i).trim();
       final url = ep.substring(i + 1).trim();
       if (url.isEmpty) continue;
@@ -637,6 +639,16 @@ class _DetailPageState extends State<DetailPage> {
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                       ),
                       onPressed: () {
+                        // 同一集在各条线路的地址都带上，播不了自动换下一条
+                        final candidates = <String>[];
+                        for (final l in lines) {
+                          final same = l.episodes.where((e) => e.name == ep.name).toList();
+                          if (same.isNotEmpty) {
+                            candidates.add(same.first.url);
+                          } else if (l.episodes.length > i) {
+                            candidates.add(l.episodes[i].url);
+                          }
+                        }
                         Navigator.push(
                           context,
                           MaterialPageRoute(
@@ -644,6 +656,7 @@ class _DetailPageState extends State<DetailPage> {
                               title: vod.name,
                               episodeName: ep.name,
                               url: ep.url,
+                              urls: candidates,
                               resumeKey: '${vod.id}_${line.name}_${ep.name}',
                             ),
                           ),
@@ -673,14 +686,17 @@ class PlayerPage extends StatefulWidget {
   final String title;
   final String episodeName;
   final String url;
+  final List<String> urls;
   final String resumeKey;
   const PlayerPage({
     super.key,
     required this.title,
     required this.episodeName,
     required this.url,
+    List<String>? urls,
     required this.resumeKey,
-  });
+  }) : urls = urls ?? const [];
+
 
   @override
   State<PlayerPage> createState() => _PlayerPageState();
@@ -691,6 +707,8 @@ class _PlayerPageState extends State<PlayerPage> {
   String? _error;
   bool _showControls = true;
   Timer? _hideTimer;
+  int _tryIndex = 0;
+  int _tryTotal = 1;
 
   @override
   void initState() {
@@ -698,23 +716,43 @@ class _PlayerPageState extends State<PlayerPage> {
     _initPlayer();
   }
 
+  List<String> get _candidates {
+    final list = <String>[widget.url, ...widget.urls];
+    final seen = <String>{};
+    return list.where((u) => u.isNotEmpty && seen.add(u)).toList();
+  }
+
   Future<void> _initPlayer() async {
-    final controller = VideoPlayerController.networkUrl(Uri.parse(widget.url));
-    try {
-      await controller.initialize();
-      final prefs = await SharedPreferences.getInstance();
-      final savedMs = prefs.getInt('pos_${widget.resumeKey}') ?? 0;
-      if (savedMs > 0 && savedMs < controller.value.duration.inMilliseconds) {
-        await controller.seekTo(Duration(milliseconds: savedMs));
+    final candidates = _candidates;
+    _tryTotal = candidates.length;
+    for (var i = 0; i < candidates.length; i++) {
+      if (!mounted) return;
+      setState(() => _tryIndex = i);
+      final controller = VideoPlayerController.networkUrl(
+        Uri.parse(candidates[i]),
+        httpHeaders: const {
+          'User-Agent':
+              'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+        },
+      );
+      try {
+        await controller.initialize().timeout(const Duration(seconds: 15));
+        final prefs = await SharedPreferences.getInstance();
+        final savedMs = prefs.getInt('pos_${widget.resumeKey}') ?? 0;
+        if (savedMs > 0 && savedMs < controller.value.duration.inMilliseconds) {
+          await controller.seekTo(Duration(milliseconds: savedMs));
+        }
+        await controller.play();
+        if (!mounted) return;
+        setState(() => _controller = controller);
+        _armHideTimer();
+        return;
+      } catch (_) {
+        await controller.dispose();
       }
-      await controller.play();
-      if (!mounted) return;
-      setState(() => _controller = controller);
-      _armHideTimer();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _error = '播不了：$e');
     }
+    if (!mounted) return;
+    setState(() => _error = '这几条线路都播不了，换个源搜搜看');
   }
 
   void _armHideTimer() {
@@ -774,7 +812,19 @@ class _PlayerPageState extends State<PlayerPage> {
                 ),
               )
             : c == null
-                ? const CircularProgressIndicator()
+                ? Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const CircularProgressIndicator(),
+                      const SizedBox(height: 12),
+                      Text(
+                        _tryTotal > 1
+                            ? '正在试第 ${_tryIndex + 1}/$_tryTotal 条线路…'
+                            : '正在加载…',
+                        style: const TextStyle(color: Colors.grey),
+                      ),
+                    ],
+                  )
                 : GestureDetector(
                     onTap: () {
                       setState(() => _showControls = !_showControls);
