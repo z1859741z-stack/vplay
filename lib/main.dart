@@ -1,14 +1,24 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui';
 
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:chewie/chewie.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 
-void main() {
+/// 外观模式：dark / light / system，存在本地
+final themeMode = ValueNotifier<ThemeMode>(ThemeMode.dark);
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final prefs = await SharedPreferences.getInstance();
+  final t = prefs.getString('theme_mode') ?? 'dark';
+  themeMode.value =
+      t == 'light' ? ThemeMode.light : t == 'system' ? ThemeMode.system : ThemeMode.dark;
   runApp(const VPlayApp());
 }
 
@@ -17,18 +27,191 @@ class VPlayApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: '影搜',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF141414),
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFF1F1F1F),
-          foregroundColor: Colors.white,
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: themeMode,
+      builder: (context, mode, _) {
+        return MaterialApp(
+          title: '影搜',
+          debugShowCheckedModeBanner: false,
+          themeMode: mode,
+          theme: ThemeData.light().copyWith(
+            scaffoldBackgroundColor: const Color(0xFFF5F5F5),
+            appBarTheme: const AppBarTheme(
+              backgroundColor: Color(0xFFF5F5F5),
+              foregroundColor: Colors.black,
+              elevation: 0,
+            ),
+            colorScheme: const ColorScheme.light(primary: kYellow),
+            filledButtonTheme: FilledButtonThemeData(
+              style: FilledButton.styleFrom(foregroundColor: Colors.black),
+            ),
+          ),
+          darkTheme: ThemeData.dark().copyWith(
+            scaffoldBackgroundColor: kBg,
+            appBarTheme: const AppBarTheme(
+              backgroundColor: kBg,
+              foregroundColor: Colors.white,
+              elevation: 0,
+            ),
+            colorScheme: const ColorScheme.dark(primary: kYellow),
+            filledButtonTheme: FilledButtonThemeData(
+              style: FilledButton.styleFrom(foregroundColor: Colors.black),
+            ),
+          ),
+          home: const MainNav(),
+        );
+      },
+    );
+  }
+}
+
+// ---------- 液态玻璃风 ----------
+
+const kYellow = Color(0xFFFFC107);
+const kBg = Color(0xFF0B0B0B);
+
+/// 磨砂玻璃容器
+Widget glassBox({required Widget child, double radius = 24, double opacity = 0.14}) {
+  return ClipRRect(
+    borderRadius: BorderRadius.circular(radius),
+    child: BackdropFilter(
+      filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(opacity),
+          borderRadius: BorderRadius.circular(radius),
+          border: Border.all(color: Colors.white.withOpacity(0.16)),
         ),
-        colorScheme: const ColorScheme.dark(primary: Colors.redAccent),
+        child: child,
       ),
-      home: const HomePage(),
+    ),
+  );
+}
+
+/// 分区标题：黄色竖条 + 标题 + 更多
+Widget sectionHeader(String title, {VoidCallback? onMore}) {
+  return Padding(
+    padding: const EdgeInsets.fromLTRB(16, 18, 16, 10),
+    child: Row(
+      children: [
+        Container(
+          width: 4,
+          height: 20,
+          decoration: BoxDecoration(
+            color: kYellow,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(title, style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
+        const Spacer(),
+        if (onMore != null)
+          GestureDetector(
+            onTap: onMore,
+            child: const Row(
+              children: [
+                Text('更多', style: TextStyle(color: Colors.grey, fontSize: 14)),
+                Icon(Icons.chevron_right, color: Colors.grey, size: 18),
+              ],
+            ),
+          ),
+      ],
+    ),
+  );
+}
+
+/// 画质角标（从备注里找 4K/蓝光等，有才显示）
+String badgeOf(Vod v) {
+  final s = '${v.name} ${v.remarks}';
+  if (s.contains('4K')) return '4K';
+  if (s.contains('蓝光')) return '蓝光';
+  if (s.contains('1080')) return '1080P';
+  if (s.contains('超清')) return '超清';
+  if (s.contains('高清')) return '高清';
+  return '';
+}
+
+/// 统一的海报卡片：16:10 海报 + 标题 + 副标题，点开进详情
+class VodCard extends StatelessWidget {
+  final Vod vod;
+  final double titleSize;
+  final bool onlyMandarin;
+  const VodCard({super.key, required this.vod, this.titleSize = 14, this.onlyMandarin = true});
+
+  @override
+  Widget build(BuildContext context) {
+    final badge = badgeOf(vod);
+    return GestureDetector(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => DetailPage(vod: vod, onlyMandarin: onlyMandarin)),
+        );
+      },
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AspectRatio(
+            aspectRatio: 16 / 10,
+            child: Stack(
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: vod.pic.isEmpty
+                      ? Container(
+                          color: const Color(0xFF242424),
+                          child: const Center(child: Icon(Icons.movie, size: 36, color: Colors.grey)),
+                        )
+                      : CachedNetworkImage(
+                          imageUrl: vod.pic,
+                          fit: BoxFit.cover,
+                          width: double.infinity,
+                          height: double.infinity,
+                          errorWidget: (_, __, ___) => Container(
+                            color: const Color(0xFF242424),
+                            child: const Center(child: Icon(Icons.broken_image, color: Colors.grey)),
+                          ),
+                        ),
+                ),
+                if (badge.isNotEmpty)
+                  Positioned(
+                    top: 6,
+                    right: 6,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: kYellow,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        badge,
+                        style: const TextStyle(
+                          color: Colors.black,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            vod.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: titleSize, fontWeight: FontWeight.w500),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            [vod.year, vod.remarks].where((e) => e.isNotEmpty).join(' · '),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -157,6 +340,32 @@ class Vod {
       sourceUrl: sourceUrl,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'pic': pic,
+        'year': year,
+        'area': area,
+        'remarks': remarks,
+        'vodClass': vodClass,
+        'typeName': typeName,
+        'source': source,
+        'sourceUrl': sourceUrl,
+      };
+
+  factory Vod.fromFav(Map<String, dynamic> j) => Vod(
+        id: '${j['id'] ?? ''}',
+        name: '${j['name'] ?? ''}',
+        pic: '${j['pic'] ?? ''}',
+        year: '${j['year'] ?? ''}',
+        area: '${j['area'] ?? ''}',
+        remarks: '${j['remarks'] ?? ''}',
+        vodClass: '${j['vodClass'] ?? ''}',
+        typeName: '${j['typeName'] ?? ''}',
+        source: '${j['source'] ?? ''}',
+        sourceUrl: '${j['sourceUrl'] ?? ''}',
+      );
 }
 
 class Episode {
@@ -201,6 +410,55 @@ Future<List<Vod>> searchAll(String keyword,
     seen.add(key);
     return true;
   }).toList();
+}
+
+/// 拉某个源的最新列表（不带关键词就是最新）
+Future<List<Vod>> fetchLatest(String base, String sourceName, {int pg = 1}) async {
+  final uri = Uri.parse('$base?ac=videolist&pg=$pg');
+  final resp = await http.get(uri).timeout(const Duration(seconds: 15));
+  if (resp.statusCode != 200) return [];
+  final data = jsonDecode(resp.body);
+  final list = (data['list'] as List?) ?? [];
+  return list
+      .map((e) => Vod.fromJson(e as Map<String, dynamic>, sourceName, base))
+      .where((v) => v.name.isNotEmpty)
+      .toList();
+}
+
+// ---------- 收藏 ----------
+
+Future<List<Vod>> readFavorites() async {
+  final prefs = await SharedPreferences.getInstance();
+  final raw = prefs.getString('favorites_json');
+  if (raw == null) return [];
+  try {
+    final list = jsonDecode(raw) as List;
+    return list.map((e) => Vod.fromFav(e as Map<String, dynamic>)).toList();
+  } catch (_) {
+    return [];
+  }
+}
+
+Future<bool> isFavorite(Vod v) async {
+  final list = await readFavorites();
+  return list.any((e) => e.id == v.id && e.sourceUrl == v.sourceUrl);
+}
+
+/// 收藏/取消收藏，返回收藏后的状态
+Future<bool> toggleFavorite(Vod v) async {
+  final prefs = await SharedPreferences.getInstance();
+  final list = await readFavorites();
+  final i = list.indexWhere((e) => e.id == v.id && e.sourceUrl == v.sourceUrl);
+  final nowFav;
+  if (i >= 0) {
+    list.removeAt(i);
+    nowFav = false;
+  } else {
+    list.add(v);
+    nowFav = true;
+  }
+  await prefs.setString('favorites_json', jsonEncode(list.map((e) => e.toJson()).toList()));
+  return nowFav;
 }
 
 Future<List<PlayLine>> fetchLines(String base, String vodId) async {
@@ -279,23 +537,17 @@ String qualityOf(String name) {
   return '';
 }
 
-String _fmt(Duration d) {
-  final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
-  final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
-  if (d.inHours > 0) return '${d.inHours}:$m:$s';
-  return '$m:$s';
-}
+// ---------- 搜索页 ----------
 
-// ---------- 首页：搜索 ----------
-
-class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+class SearchPage extends StatefulWidget {
+  final String? initialKeyword;
+  const SearchPage({super.key, this.initialKeyword});
 
   @override
-  State<HomePage> createState() => _HomePageState();
+  State<SearchPage> createState() => _SearchPageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _SearchPageState extends State<SearchPage> {
   final _keywordCtl = TextEditingController();
   final _linkCtl = TextEditingController();
   String? _onlySource;
@@ -311,6 +563,10 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     _loadHistory();
     _loadSources();
+    if ((widget.initialKeyword ?? '').isNotEmpty) {
+      _keywordCtl.text = widget.initialKeyword!;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _doSearch(widget.initialKeyword));
+    }
   }
 
   /// 启动时拉一次远程源列表，失败就用上次缓存的或内置的
@@ -369,7 +625,7 @@ class _HomePageState extends State<HomePage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => PlayerPage(title: '直接播放', episodeName: '直链', url: url, resumeKey: url),
+        builder: (_) => PlayerPage(title: '直接播放', directUrl: url),
       ),
     );
   }
@@ -385,7 +641,7 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('影搜'),
+        title: const Text('搜索'),
         actions: [
           IconButton(
             icon: const Icon(Icons.tune),
@@ -414,7 +670,7 @@ class _HomePageState extends State<HomePage> {
                     decoration: InputDecoration(
                       hintText: '搜片名，比如 哪吒',
                       filled: true,
-                      fillColor: const Color(0xFF242424),
+                      fillColor: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF242424) : Colors.white,
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(10),
                         borderSide: BorderSide.none,
@@ -483,7 +739,7 @@ class _HomePageState extends State<HomePage> {
                     decoration: InputDecoration(
                       hintText: '粘贴 m3u8 / mp4 链接直接播',
                       filled: true,
-                      fillColor: const Color(0xFF242424),
+                      fillColor: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF242424) : Colors.white,
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(10),
                         borderSide: BorderSide.none,
@@ -527,75 +783,634 @@ class _HomePageState extends State<HomePage> {
                         child: Text('搜片名开始看', style: TextStyle(color: Colors.grey)),
                       )
                     : GridView.builder(
-                        padding: const EdgeInsets.all(12),
+                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 100),
                         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 3,
-                          childAspectRatio: 0.68,
-                          crossAxisSpacing: 10,
-                          mainAxisSpacing: 12,
+                          crossAxisCount: 2,
+                          childAspectRatio: 0.78,
+                          crossAxisSpacing: 12,
+                          mainAxisSpacing: 14,
                         ),
                         itemCount: _results.length,
-                        itemBuilder: (context, i) {
-                          final v = _results[i];
-                          return GestureDetector(
-                            onTap: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => DetailPage(vod: v, onlyMandarin: _onlyMandarin),
-                                ),
-                              );
-                            },
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Expanded(
-                                  child: ClipRRect(
-                                    borderRadius: BorderRadius.circular(8),
-                                    child: v.pic.isEmpty
-                                        ? Container(
-                                            color: const Color(0xFF242424),
-                                            child: const Center(
-                                              child: Icon(Icons.movie, size: 40, color: Colors.grey),
-                                            ),
-                                          )
-                                        : CachedNetworkImage(
-                                            imageUrl: v.pic,
-                                            fit: BoxFit.cover,
-                                            width: double.infinity,
-                                            placeholder: (_, __) => Container(
-                                              color: const Color(0xFF242424),
-                                              child: const Center(
-                                                child: CircularProgressIndicator(strokeWidth: 2),
-                                              ),
-                                            ),
-                                            errorWidget: (_, __, ___) => Container(
-                                              color: const Color(0xFF242424),
-                                              child: const Center(
-                                                child: Icon(Icons.broken_image, color: Colors.grey),
-                                              ),
-                                            ),
-                                          ),
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  v.name,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontSize: 13),
-                                ),
-                                Text(
-                                  [v.year, v.remarks].where((e) => e.isNotEmpty).join(' · '),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontSize: 11, color: Colors.grey),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
+                        itemBuilder: (context, i) =>
+                            VodCard(vod: _results[i], onlyMandarin: _onlyMandarin),
                       ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------- 底部导航：首页 / 发现 / 搜索 / 收藏 / 我的 ----------
+
+class MainNav extends StatefulWidget {
+  const MainNav({super.key});
+  @override
+  State<MainNav> createState() => _MainNavState();
+}
+
+class _MainNavState extends State<MainNav> {
+  int _index = 0;
+  static const _labels = ['首页', '发现', '搜索', '收藏', '我的'];
+  static const _icons = [Icons.home, Icons.explore, Icons.search, Icons.favorite, Icons.person];
+
+  Widget _page(int i) {
+    switch (i) {
+      case 0:
+        return const HomeFeedPage();
+      case 1:
+        return const DiscoverPage();
+      case 2:
+        return const SearchPage();
+      case 3:
+        return const FavoritesPage();
+      default:
+        return const ProfilePage();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Scaffold(
+      body: Stack(
+        children: [
+          Positioned.fill(child: _page(_index)),
+          Positioned(
+            left: 16,
+            right: 16,
+            bottom: 20,
+            child: glassBox(
+              radius: 28,
+              opacity: isDark ? 0.16 : 0.72,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: List.generate(5, (i) {
+                    final active = i == _index;
+                    return Expanded(
+                      child: GestureDetector(
+                        onTap: () => setState(() => _index = i),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 6),
+                          decoration: BoxDecoration(
+                            color: active ? kYellow.withOpacity(0.18) : Colors.transparent,
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(_icons[i], color: active ? kYellow : Colors.grey, size: 24),
+                              const SizedBox(height: 2),
+                              Text(
+                                _labels[i],
+                                style: TextStyle(
+                                  color: active ? kYellow : Colors.grey,
+                                  fontSize: 11,
+                                  fontWeight: active ? FontWeight.bold : FontWeight.normal,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------- 首页：推荐分区 ----------
+
+class FeedSectionData {
+  final String title;
+  final String filter;
+  final List<Vod> items;
+  FeedSectionData(this.title, this.filter, this.items);
+}
+
+class HomeFeedPage extends StatefulWidget {
+  const HomeFeedPage({super.key});
+  @override
+  State<HomeFeedPage> createState() => _HomeFeedPageState();
+}
+
+class _HomeFeedPageState extends State<HomeFeedPage> {
+  List<Map<String, String>> _sources = kSources;
+  String _sourceName = '';
+  List<FeedSectionData> _sections = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    await fetchRemoteSources();
+    final list = await effectiveSources();
+    if (!mounted) return;
+    setState(() => _sources = list);
+    await _loadFeed();
+  }
+
+  Future<void> _loadFeed() async {
+    setState(() => _loading = true);
+    final src = _sources.firstWhere(
+      (s) => s['name'] == _sourceName,
+      orElse: () => _sources.isNotEmpty ? _sources.first : {'name': '', 'url': ''},
+    );
+    final base = src['url'] ?? '';
+    final name = src['name'] ?? '';
+    List<Vod> all = [];
+    if (base.isNotEmpty) {
+      all = await fetchLatest(base, name, pg: 1).catchError((_) => <Vod>[]);
+      if (all.length < 12) {
+        final more = await fetchLatest(base, name, pg: 2).catchError((_) => <Vod>[]);
+        all = [...all, ...more];
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _sourceName = name;
+      _loading = false;
+      _sections = _buildSections(all);
+    });
+  }
+
+  List<FeedSectionData> _buildSections(List<Vod> all) {
+    final seen = <String>{};
+    final dedup = all.where((v) {
+      final k = '${v.name}|${v.year}';
+      if (seen.contains(k)) return false;
+      seen.add(k);
+      return true;
+    }).toList();
+    bool match(Vod v, List<String> keys) {
+      final s = '${v.typeName} ${v.vodClass} ${v.name}';
+      return keys.any(s.contains);
+    }
+
+    final out = <FeedSectionData>[];
+    final rec = dedup.take(6).toList();
+    if (rec.isNotEmpty) out.add(FeedSectionData('推荐', 'all', rec));
+    final movie = dedup.where((v) => match(v, ['电影'])).take(6).toList();
+    if (movie.length >= 2) out.add(FeedSectionData('电影', '电影', movie));
+    final tv = dedup.where((v) => match(v, ['电视剧'])).take(6).toList();
+    if (tv.length >= 2) out.add(FeedSectionData('电视剧', '电视剧', tv));
+    final anime = dedup.where((v) => match(v, ['动漫', '动画', '国漫', '日漫'])).take(6).toList();
+    if (anime.length >= 2) out.add(FeedSectionData('动漫', '动漫', anime));
+    final variety = dedup.where((v) => match(v, ['综艺'])).take(6).toList();
+    if (variety.length >= 2) out.add(FeedSectionData('综艺', '综艺', variety));
+    return out;
+  }
+
+  void _switchSource() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        decoration: BoxDecoration(
+          color: Theme.of(context).scaffoldBackgroundColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('切换片源', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+            ),
+            for (final s in _sources)
+              ListTile(
+                title: Text(s['name']!),
+                trailing:
+                    s['name'] == _sourceName ? const Icon(Icons.check, color: kYellow) : null,
+                onTap: () {
+                  Navigator.pop(context);
+                  setState(() => _sourceName = s['name']!);
+                  _loadFeed();
+                },
+              ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: RefreshIndicator(
+          onRefresh: _loadFeed,
+          color: kYellow,
+          child: CustomScrollView(
+            slivers: [
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: GestureDetector(
+                          onTap: _switchSource,
+                          child: glassBox(
+                            radius: 20,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    width: 8,
+                                    height: 8,
+                                    decoration: const BoxDecoration(
+                                      color: kYellow,
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 7),
+                                  Text(
+                                    _sourceName.isEmpty ? '影搜' : _sourceName,
+                                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  const Icon(Icons.keyboard_arrow_down, size: 18),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const Text('首页', style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                ),
+              ),
+              if (_loading)
+                const SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.only(top: 120),
+                    child: Center(child: CircularProgressIndicator(color: kYellow)),
+                  ),
+                )
+              else if (_sections.isEmpty)
+                const SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.only(top: 120),
+                    child: Center(
+                      child: Text('这个源暂时没有内容，换个源试试', style: TextStyle(color: Colors.grey)),
+                    ),
+                  ),
+                )
+              else
+                for (final sec in _sections) ...[
+                  SliverToBoxAdapter(
+                    child: sectionHeader(sec.title, onMore: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => SectionListPage(
+                            title: sec.title,
+                            filter: sec.filter,
+                            sourceName: _sourceName,
+                          ),
+                        ),
+                      );
+                    }),
+                  ),
+                  SliverPadding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    sliver: SliverGrid(
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 2,
+                        childAspectRatio: 0.78,
+                        crossAxisSpacing: 12,
+                        mainAxisSpacing: 14,
+                      ),
+                      delegate: SliverChildBuilderDelegate(
+                        (context, i) => VodCard(vod: sec.items[i]),
+                        childCount: sec.items.length,
+                      ),
+                    ),
+                  ),
+                ],
+              const SliverToBoxAdapter(child: SizedBox(height: 110)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------- 分区更多列表 ----------
+
+class SectionListPage extends StatefulWidget {
+  final String title;
+  final String filter;
+  final String sourceName;
+  const SectionListPage(
+      {super.key, required this.title, required this.filter, required this.sourceName});
+  @override
+  State<SectionListPage> createState() => _SectionListPageState();
+}
+
+class _SectionListPageState extends State<SectionListPage> {
+  List<Vod> _items = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final sources = await effectiveSources();
+    final src = sources.firstWhere(
+      (s) => s['name'] == widget.sourceName,
+      orElse: () => sources.isNotEmpty ? sources.first : {'name': '', 'url': ''},
+    );
+    final base = src['url'] ?? '';
+    List<Vod> all = [];
+    if (base.isNotEmpty) {
+      for (var pg = 1; pg <= 3; pg++) {
+        final page = await fetchLatest(base, src['name'] ?? '', pg: pg).catchError((_) => <Vod>[]);
+        all = [...all, ...page];
+        if (all.length >= 30) break;
+      }
+    }
+    bool match(Vod v) {
+      if (widget.filter == 'all') return true;
+      final keys =
+          widget.filter == '动漫' ? ['动漫', '动画', '国漫', '日漫'] : [widget.filter];
+      final s = '${v.typeName} ${v.vodClass} ${v.name}';
+      return keys.any(s.contains);
+    }
+
+    final seen = <String>{};
+    final items = all.where(match).where((v) {
+      final k = '${v.name}|${v.year}';
+      if (seen.contains(k)) return false;
+      seen.add(k);
+      return true;
+    }).toList();
+    if (!mounted) return;
+    setState(() {
+      _items = items;
+      _loading = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.title)),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator(color: kYellow))
+          : _items.isEmpty
+              ? const Center(child: Text('没有更多了', style: TextStyle(color: Colors.grey)))
+              : GridView.builder(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2,
+                    childAspectRatio: 0.78,
+                    crossAxisSpacing: 12,
+                    mainAxisSpacing: 14,
+                  ),
+                  itemCount: _items.length,
+                  itemBuilder: (context, i) => VodCard(vod: _items[i]),
+                ),
+    );
+  }
+}
+
+// ---------- 发现：分类 ----------
+
+class DiscoverPage extends StatelessWidget {
+  const DiscoverPage({super.key});
+  static const _cats = [
+    '电影',
+    '电视剧',
+    '动漫',
+    '综艺',
+    '动作',
+    '喜剧',
+    '爱情',
+    '科幻',
+    '悬疑',
+    '战争',
+    '国漫',
+    '日漫',
+    '纪录片',
+    '犯罪',
+    '古装',
+    '都市',
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Scaffold(
+      appBar: AppBar(title: const Text('发现')),
+      body: GridView.builder(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 110),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 3,
+          childAspectRatio: 1.9,
+          crossAxisSpacing: 10,
+          mainAxisSpacing: 10,
+        ),
+        itemCount: _cats.length,
+        itemBuilder: (context, i) {
+          final c = _cats[i];
+          return GestureDetector(
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => SearchPage(initialKeyword: c)),
+              );
+            },
+            child: Container(
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF1E1E1E) : const Color(0xFFEFEFEF),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              alignment: Alignment.center,
+              child: Text(c, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+// ---------- 收藏 ----------
+
+class FavoritesPage extends StatefulWidget {
+  const FavoritesPage({super.key});
+  @override
+  State<FavoritesPage> createState() => _FavoritesPageState();
+}
+
+class _FavoritesPageState extends State<FavoritesPage> {
+  List<Vod> _favs = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final list = await readFavorites();
+    if (!mounted) return;
+    setState(() => _favs = list);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('收藏')),
+      body: _favs.isEmpty
+          ? const Center(
+              child: Text('还没有收藏，看到喜欢的片点右上角的心',
+                  style: TextStyle(color: Colors.grey)),
+            )
+          : GridView.builder(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 110),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                childAspectRatio: 0.78,
+                crossAxisSpacing: 12,
+                mainAxisSpacing: 14,
+              ),
+              itemCount: _favs.length,
+              itemBuilder: (context, i) => VodCard(vod: _favs[i]),
+            ),
+    );
+  }
+}
+
+// ---------- 我的 ----------
+
+class ProfilePage extends StatefulWidget {
+  const ProfilePage({super.key});
+  @override
+  State<ProfilePage> createState() => _ProfilePageState();
+}
+
+class _ProfilePageState extends State<ProfilePage> {
+  String _theme = 'dark';
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() => _theme = prefs.getString('theme_mode') ?? 'dark');
+  }
+
+  Future<void> _setTheme(String v) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('theme_mode', v);
+    setState(() => _theme = v);
+    themeMode.value =
+        v == 'light' ? ThemeMode.light : v == 'system' ? ThemeMode.system : ThemeMode.dark;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('我的')),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 110),
+        children: [
+          const Text('外观', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          RadioListTile<String>(
+            title: const Text('深色模式'),
+            value: 'dark',
+            groupValue: _theme,
+            activeColor: kYellow,
+            onChanged: (v) => _setTheme(v!),
+          ),
+          RadioListTile<String>(
+            title: const Text('浅色模式'),
+            value: 'light',
+            groupValue: _theme,
+            activeColor: kYellow,
+            onChanged: (v) => _setTheme(v!),
+          ),
+          RadioListTile<String>(
+            title: const Text('跟随系统'),
+            value: 'system',
+            groupValue: _theme,
+            activeColor: kYellow,
+            onChanged: (v) => _setTheme(v!),
+          ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.tune),
+            title: const Text('源管理'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const SourcesPage()),
+              );
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.refresh),
+            title: const Text('从网上拉取最新源'),
+            onTap: () async {
+              final r = await fetchRemoteSources();
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(r == null ? '拉取失败，用的还是上次的源' : '源列表已更新到最新')),
+              );
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.delete_outline),
+            title: const Text('清空搜索历史'),
+            onTap: () async {
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.remove('search_history');
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已清空')));
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.delete_outline),
+            title: const Text('清空收藏'),
+            onTap: () async {
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.remove('favorites_json');
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已清空')));
+            },
+          ),
+          const SizedBox(height: 16),
+          const Center(
+            child: Text('影搜 v1.0 · 片源来自公开采集站', style: TextStyle(color: Colors.grey, fontSize: 12)),
           ),
         ],
       ),
@@ -617,18 +1432,44 @@ class DetailPage extends StatefulWidget {
 class _DetailPageState extends State<DetailPage> {
   late Future<List<PlayLine>> _future;
   int _lineIndex = 0;
+  bool _fav = false;
 
   @override
   void initState() {
     super.initState();
     _future = fetchLines(widget.vod.sourceUrl, widget.vod.id);
+    isFavorite(widget.vod).then((v) {
+      if (mounted) setState(() => _fav = v);
+    });
+  }
+
+  Future<void> _toggleFav() async {
+    final nowFav = await toggleFavorite(widget.vod);
+    if (!mounted) return;
+    setState(() => _fav = nowFav);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(nowFav ? '已收藏' : '已取消收藏'),
+        duration: const Duration(seconds: 1),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final vod = widget.vod;
     return Scaffold(
-      appBar: AppBar(title: Text(vod.name)),
+      appBar: AppBar(
+        title: Text(vod.name),
+        actions: [
+          IconButton(
+            icon: Icon(_fav ? Icons.favorite : Icons.favorite_border,
+                color: _fav ? kYellow : null),
+            tooltip: '收藏',
+            onPressed: _toggleFav,
+          ),
+        ],
+      ),
       body: FutureBuilder<List<PlayLine>>(
         future: _future,
         builder: (context, snap) {
@@ -739,25 +1580,14 @@ class _DetailPageState extends State<DetailPage> {
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                       ),
                       onPressed: () {
-                        // 同一集在各条线路的地址都带上，播不了自动换下一条
-                        final candidates = <String>[];
-                        for (final l in lines) {
-                          final same = l.episodes.where((e) => e.name == ep.name).toList();
-                          if (same.isNotEmpty) {
-                            candidates.add(same.first.url);
-                          } else if (l.episodes.length > i) {
-                            candidates.add(l.episodes[i].url);
-                          }
-                        }
                         Navigator.push(
                           context,
                           MaterialPageRoute(
                             builder: (_) => PlayerPage(
                               title: vod.name,
-                              episodeName: ep.name,
-                              url: ep.url,
-                              urls: candidates,
-                              resumeKey: '${vod.id}_${line.name}_${ep.name}',
+                              lines: lines,
+                              lineIndex: safeIndex,
+                              episodeIndex: i,
                             ),
                           ),
                         );
@@ -945,35 +1775,74 @@ class _SourcesPageState extends State<SourcesPage> {
   }
 }
 
-// ---------- 播放页 ----------
+// ---------- 播放页（开源 Chewie，干净简洁） ----------
 
 class PlayerPage extends StatefulWidget {
   final String title;
-  final String episodeName;
-  final String url;
-  final List<String> urls;
-  final String resumeKey;
+  final List<PlayLine> lines;
+  final int lineIndex;
+  final int episodeIndex;
+  final String? directUrl;
   const PlayerPage({
     super.key,
     required this.title,
-    required this.episodeName,
-    required this.url,
-    List<String>? urls,
-    required this.resumeKey,
-  }) : urls = urls ?? const [];
-
+    this.lines = const [],
+    this.lineIndex = 0,
+    this.episodeIndex = 0,
+    this.directUrl,
+  });
 
   @override
   State<PlayerPage> createState() => _PlayerPageState();
 }
 
 class _PlayerPageState extends State<PlayerPage> {
-  VideoPlayerController? _controller;
+  VideoPlayerController? _videoController;
+  ChewieController? _chewieController;
   String? _error;
-  bool _showControls = true;
-  Timer? _hideTimer;
   int _tryIndex = 0;
   int _tryTotal = 1;
+
+  Episode? get _episode {
+    if (widget.lines.isEmpty) return null;
+    final eps = widget.lines[widget.lineIndex].episodes;
+    if (widget.episodeIndex >= eps.length) return null;
+    return eps[widget.episodeIndex];
+  }
+
+  String get _resumeKey {
+    if (widget.directUrl != null) return widget.directUrl!;
+    final ep = _episode;
+    return '${widget.title}_${widget.lines[widget.lineIndex].name}_${ep?.name ?? ''}';
+  }
+
+  String get _currentUrl {
+    if (widget.directUrl != null) return widget.directUrl!;
+    return _episode?.url ?? '';
+  }
+
+  bool get _hasNext {
+    if (widget.lines.isEmpty) return false;
+    return widget.episodeIndex + 1 < widget.lines[widget.lineIndex].episodes.length;
+  }
+
+  /// 同一集在各条线路的地址，播不了自动换下一条
+  List<String> _candidates() {
+    if (widget.directUrl != null) return [widget.directUrl!];
+    final ep = _episode;
+    if (ep == null) return [];
+    final urls = <String>[];
+    for (final l in widget.lines) {
+      final same = l.episodes.where((e) => e.name == ep.name).toList();
+      if (same.isNotEmpty) {
+        urls.add(same.first.url);
+      } else if (l.episodes.length > widget.episodeIndex) {
+        urls.add(l.episodes[widget.episodeIndex].url);
+      }
+    }
+    final seen = <String>{};
+    return urls.where((u) => u.isNotEmpty && seen.add(u)).toList();
+  }
 
   @override
   void initState() {
@@ -981,14 +1850,8 @@ class _PlayerPageState extends State<PlayerPage> {
     _initPlayer();
   }
 
-  List<String> get _candidates {
-    final list = <String>[widget.url, ...widget.urls];
-    final seen = <String>{};
-    return list.where((u) => u.isNotEmpty && seen.add(u)).toList();
-  }
-
   Future<void> _initPlayer() async {
-    final candidates = _candidates;
+    final candidates = _candidates();
     _tryTotal = candidates.length;
     for (var i = 0; i < candidates.length; i++) {
       if (!mounted) return;
@@ -1003,14 +1866,36 @@ class _PlayerPageState extends State<PlayerPage> {
       try {
         await controller.initialize().timeout(const Duration(seconds: 15));
         final prefs = await SharedPreferences.getInstance();
-        final savedMs = prefs.getInt('pos_${widget.resumeKey}') ?? 0;
+        final savedMs = prefs.getInt('pos_$_resumeKey') ?? 0;
         if (savedMs > 0 && savedMs < controller.value.duration.inMilliseconds) {
           await controller.seekTo(Duration(milliseconds: savedMs));
         }
         await controller.play();
         if (!mounted) return;
-        setState(() => _controller = controller);
-        _armHideTimer();
+        final chewie = ChewieController(
+          videoPlayerController: controller,
+          autoPlay: true,
+          allowFullScreen: true,
+          allowMuting: true,
+          allowPlaybackSpeedChanging: true,
+          playbackSpeeds: const [0.5, 0.75, 1.0, 1.25, 1.5, 2.0],
+          materialProgressColors: ChewieProgressColors(
+            playedColor: kYellow,
+            handleColor: kYellow,
+            backgroundColor: Colors.white24,
+            bufferedColor: Colors.white38,
+          ),
+          cupertinoProgressColors: ChewieProgressColors(
+            playedColor: kYellow,
+            handleColor: kYellow,
+            backgroundColor: Colors.white24,
+            bufferedColor: Colors.white38,
+          ),
+        );
+        setState(() {
+          _videoController = controller;
+          _chewieController = chewie;
+        });
         return;
       } catch (_) {
         await controller.dispose();
@@ -1020,45 +1905,63 @@ class _PlayerPageState extends State<PlayerPage> {
     setState(() => _error = '这几条线路都播不了，换个源搜搜看');
   }
 
-  void _armHideTimer() {
-    _hideTimer?.cancel();
-    _hideTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted && (_controller?.value.isPlaying ?? false)) {
-        setState(() => _showControls = false);
-      }
-    });
-  }
-
   Future<void> _savePosition() async {
-    final c = _controller;
+    final c = _videoController;
     if (c == null) return;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('pos_${widget.resumeKey}', c.value.position.inMilliseconds);
+    await prefs.setInt('pos_$_resumeKey', c.value.position.inMilliseconds);
+  }
+
+  void _nextEpisode() {
+    if (!_hasNext) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PlayerPage(
+          title: widget.title,
+          lines: widget.lines,
+          lineIndex: widget.lineIndex,
+          episodeIndex: widget.episodeIndex + 1,
+        ),
+      ),
+    );
   }
 
   @override
   void dispose() {
-    _hideTimer?.cancel();
     _savePosition();
-    _controller?.dispose();
+    _chewieController?.dispose();
+    _videoController?.dispose();
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final c = _controller;
+    final ep = _episode;
+    final title = widget.directUrl != null
+        ? widget.title
+        : '${widget.title} ${ep?.name ?? ''}';
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: Colors.black,
-        title: Text('${widget.title} ${widget.episodeName}'),
+        foregroundColor: Colors.white,
+        title: Text(title, style: const TextStyle(fontSize: 16)),
         actions: [
+          if (_hasNext)
+            IconButton(
+              icon: const Icon(Icons.skip_next),
+              tooltip: '下一集',
+              onPressed: _nextEpisode,
+            ),
           IconButton(
             icon: const Icon(Icons.copy),
             tooltip: '复制播放链接',
             onPressed: () {
-              Clipboard.setData(ClipboardData(text: widget.url));
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('链接已复制')));
+              Clipboard.setData(ClipboardData(text: _currentUrl));
+              ScaffoldMessenger.of(context)
+                  .showSnackBar(const SnackBar(content: Text('链接已复制')));
             },
           ),
         ],
@@ -1070,17 +1973,20 @@ class _PlayerPageState extends State<PlayerPage> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(_error!, textAlign: TextAlign.center),
+                    Text(_error!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white)),
                     const SizedBox(height: 12),
-                    const Text('换条线路试试，或者复制链接到别的播放器', style: TextStyle(color: Colors.grey)),
+                    const Text('换条线路试试，或者复制链接到别的播放器',
+                        style: TextStyle(color: Colors.grey)),
                   ],
                 ),
               )
-            : c == null
+            : _chewieController == null
                 ? Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const CircularProgressIndicator(),
+                      const CircularProgressIndicator(color: kYellow),
                       const SizedBox(height: 12),
                       Text(
                         _tryTotal > 1
@@ -1090,91 +1996,7 @@ class _PlayerPageState extends State<PlayerPage> {
                       ),
                     ],
                   )
-                : GestureDetector(
-                    onTap: () {
-                      setState(() => _showControls = !_showControls);
-                      if (_showControls) _armHideTimer();
-                    },
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        AspectRatio(
-                          aspectRatio: c.value.aspectRatio,
-                          child: VideoPlayer(c),
-                        ),
-                        if (_showControls)
-                          Container(
-                            color: Colors.black45,
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    IconButton(
-                                      iconSize: 40,
-                                      icon: const Icon(Icons.replay_10),
-                                      onPressed: () {
-                                        final pos = c.value.position - const Duration(seconds: 10);
-                                        c.seekTo(pos < Duration.zero ? Duration.zero : pos);
-                                      },
-                                    ),
-                                    const SizedBox(width: 24),
-                                    IconButton(
-                                      iconSize: 56,
-                                      icon: Icon(
-                                        c.value.isPlaying ? Icons.pause_circle : Icons.play_circle,
-                                      ),
-                                      onPressed: () {
-                                        setState(() {
-                                          if (c.value.isPlaying) {
-                                            c.pause();
-                                          } else {
-                                            c.play();
-                                          }
-                                        });
-                                        _armHideTimer();
-                                      },
-                                    ),
-                                    const SizedBox(width: 24),
-                                    IconButton(
-                                      iconSize: 40,
-                                      icon: const Icon(Icons.forward_10),
-                                      onPressed: () {
-                                        final pos = c.value.position + const Duration(seconds: 10);
-                                        final dur = c.value.duration;
-                                        c.seekTo(pos > dur ? dur : pos);
-                                      },
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 16),
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                                  child: Row(
-                                    children: [
-                                      Text(_fmt(c.value.position)),
-                                      Expanded(
-                                        child: Slider(
-                                          value: c.value.position.inMilliseconds.toDouble(),
-                                          max: c.value.duration.inMilliseconds.toDouble() > 0
-                                              ? c.value.duration.inMilliseconds.toDouble()
-                                              : 1,
-                                          onChanged: (v) {
-                                            c.seekTo(Duration(milliseconds: v.toInt()));
-                                          },
-                                        ),
-                                      ),
-                                      Text(_fmt(c.value.duration)),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
+                : Chewie(controller: _chewieController!),
       ),
     );
   }
