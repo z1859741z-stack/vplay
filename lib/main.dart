@@ -75,8 +75,9 @@ const kBg = Color(0xFF0B0B0B);
 Widget glassBox({required Widget child, double radius = 24, double opacity = 0.14}) {
   // 真液态玻璃：shader 折射 + 色散 + 高光，不是普通模糊盒子
   final alpha = (opacity * 255).round().clamp(20, 110);
-  return LiquidGlass.withOwnLayer(
+  return AdaptiveGlass(
     shape: LiquidRoundedRectangle(borderRadius: radius),
+    quality: GlassQuality.premium,
     settings: LiquidGlassSettings(
       thickness: 18,
       blur: 3,
