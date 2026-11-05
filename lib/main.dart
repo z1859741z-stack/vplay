@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:ui';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:chewie/chewie.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -19,6 +19,7 @@ void main() async {
   final t = prefs.getString('theme_mode') ?? 'dark';
   themeMode.value =
       t == 'light' ? ThemeMode.light : t == 'system' ? ThemeMode.system : ThemeMode.dark;
+  await LiquidGlassWidgets.initialize(); // 预热液态玻璃 shader
   runApp(const VPlayApp());
 }
 
@@ -72,19 +73,20 @@ const kBg = Color(0xFF0B0B0B);
 
 /// 磨砂玻璃容器
 Widget glassBox({required Widget child, double radius = 24, double opacity = 0.14}) {
-  return ClipRRect(
-    borderRadius: BorderRadius.circular(radius),
-    child: BackdropFilter(
-      filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-      child: Container(
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(opacity),
-          borderRadius: BorderRadius.circular(radius),
-          border: Border.all(color: Colors.white.withOpacity(0.16)),
-        ),
-        child: child,
-      ),
+  // 真液态玻璃：shader 折射 + 色散 + 高光，不是普通模糊盒子
+  final alpha = (opacity * 255).round().clamp(20, 110);
+  return LiquidGlass.withOwnLayer(
+    shape: LiquidRoundedRectangle(borderRadius: radius),
+    settings: LiquidGlassSettings(
+      thickness: 18,
+      blur: 3,
+      refractiveIndex: 1.25,
+      chromaticAberration: 0.012,
+      saturation: 1.4,
+      lightIntensity: 0.6,
+      glassColor: Color.fromARGB(alpha, 255, 255, 255),
     ),
+    child: child,
   );
 }
 
@@ -1010,105 +1012,110 @@ class _HomeFeedPageState extends State<HomeFeedPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(
-        child: RefreshIndicator(
-          onRefresh: _loadFeed,
-          color: kYellow,
-          child: CustomScrollView(
-            slivers: [
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: GestureDetector(
-                          onTap: _switchSource,
-                          child: glassBox(
-                            radius: 20,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Container(
-                                    width: 8,
-                                    height: 8,
-                                    decoration: const BoxDecoration(
-                                      color: kYellow,
-                                      shape: BoxShape.circle,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 7),
-                                  Text(
-                                    _sourceName.isEmpty ? '影搜' : _sourceName,
-                                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  const Icon(Icons.keyboard_arrow_down, size: 18),
-                                ],
+        child: Stack(
+          children: [
+            RefreshIndicator(
+              onRefresh: _loadFeed,
+              color: kYellow,
+              child: CustomScrollView(
+                slivers: [
+                  const SliverToBoxAdapter(child: SizedBox(height: 64)),
+                  if (_loading)
+                    const SliverToBoxAdapter(
+                      child: Padding(
+                        padding: EdgeInsets.only(top: 120),
+                        child: Center(child: CircularProgressIndicator(color: kYellow)),
+                      ),
+                    )
+                  else if (_sections.isEmpty)
+                    const SliverToBoxAdapter(
+                      child: Padding(
+                        padding: EdgeInsets.only(top: 120),
+                        child: Center(
+                          child: Text('这个源暂时没有内容，换个源试试', style: TextStyle(color: Colors.grey)),
+                        ),
+                      ),
+                    )
+                  else
+                    for (final sec in _sections) ...[
+                      SliverToBoxAdapter(
+                        child: sectionHeader(sec.title, onMore: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => SectionListPage(
+                                title: sec.title,
+                                filter: sec.filter,
+                                sourceName: _sourceName,
                               ),
                             ),
+                          );
+                        }),
+                      ),
+                      SliverPadding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        sliver: SliverGrid(
+                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 2,
+                            childAspectRatio: 0.78,
+                            crossAxisSpacing: 12,
+                            mainAxisSpacing: 14,
+                          ),
+                          delegate: SliverChildBuilderDelegate(
+                            (context, i) => VodCard(vod: sec.items[i]),
+                            childCount: sec.items.length,
                           ),
                         ),
                       ),
-                      const Text('首页', style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
                     ],
-                  ),
-                ),
+                  const SliverToBoxAdapter(child: SizedBox(height: 110)),
+                ],
               ),
-              if (_loading)
-                const SliverToBoxAdapter(
-                  child: Padding(
-                    padding: EdgeInsets.only(top: 120),
-                    child: Center(child: CircularProgressIndicator(color: kYellow)),
-                  ),
-                )
-              else if (_sections.isEmpty)
-                const SliverToBoxAdapter(
-                  child: Padding(
-                    padding: EdgeInsets.only(top: 120),
-                    child: Center(
-                      child: Text('这个源暂时没有内容，换个源试试', style: TextStyle(color: Colors.grey)),
-                    ),
-                  ),
-                )
-              else
-                for (final sec in _sections) ...[
-                  SliverToBoxAdapter(
-                    child: sectionHeader(sec.title, onMore: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => SectionListPage(
-                            title: sec.title,
-                            filter: sec.filter,
-                            sourceName: _sourceName,
+            ),
+            Positioned(
+              top: 10,
+              left: 16,
+              right: 16,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: GestureDetector(
+                      onTap: _switchSource,
+                      child: glassBox(
+                        radius: 20,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: const BoxDecoration(
+                                  color: kYellow,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                              const SizedBox(width: 7),
+                              Text(
+                                _sourceName.isEmpty ? '影搜' : _sourceName,
+                                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(width: 4),
+                              const Icon(Icons.keyboard_arrow_down, size: 18),
+                            ],
                           ),
                         ),
-                      );
-                    }),
-                  ),
-                  SliverPadding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    sliver: SliverGrid(
-                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 2,
-                        childAspectRatio: 0.78,
-                        crossAxisSpacing: 12,
-                        mainAxisSpacing: 14,
-                      ),
-                      delegate: SliverChildBuilderDelegate(
-                        (context, i) => VodCard(vod: sec.items[i]),
-                        childCount: sec.items.length,
                       ),
                     ),
                   ),
+                  const Text('首页', style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
                 ],
-              const SliverToBoxAdapter(child: SizedBox(height: 110)),
-            ],
-          ),
+              ),
+            ),
+          ],
         ),
       ),
     );
