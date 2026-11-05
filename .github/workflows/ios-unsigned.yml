@@ -11,7 +11,7 @@ jobs:
           flutter-version: '3.38.x'
           channel: 'stable'
       - run: flutter pub get
-      - run: flutter build ios --release --config-only --target=lib/main.dart
+      - run: flutter build ios --release --config-only --no-codesign --target=lib/main.dart
       - run: |
           cd ios
           xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
