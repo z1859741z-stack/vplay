@@ -47,6 +47,75 @@ const List<Map<String, String>> kSources = [
 
 const List<String> kMandarinMarkers = ['国语', '国配', '中文配音', '普通话', '中配', '国语版'];
 
+// ---------- 源列表：远程自动更新 ----------
+
+/// 远程源列表：App 启动时自动拉取，改这个文件不用重新编译。
+const kRemoteSourcesUrl =
+    'https://raw.githubusercontent.com/z1859741z-stack/vplay/main/sources.json';
+
+List<Map<String, String>> _parseSourceList(dynamic decoded) {
+  if (decoded is! List) return [];
+  return decoded
+      .whereType<Map>()
+      .map((e) => {'name': '${e['name'] ?? ''}', 'url': '${e['url'] ?? ''}'})
+      .where((m) => m['name']!.isNotEmpty && m['url']!.startsWith('http'))
+      .toList();
+}
+
+/// 拉远程源列表（成功则缓存并返回，失败返回 null）
+Future<List<Map<String, String>>?> fetchRemoteSources() async {
+  try {
+    final resp = await http.get(Uri.parse(kRemoteSourcesUrl)).timeout(const Duration(seconds: 10));
+    if (resp.statusCode != 200) return null;
+    final list = _parseSourceList(jsonDecode(resp.body));
+    if (list.isEmpty) return null;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('remote_sources_json', jsonEncode(list));
+    await prefs.setInt('remote_sources_updated_at', DateTime.now().millisecondsSinceEpoch);
+    return list;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// 基础源 = 上次拉到的远程列表，没有则用内置
+Future<List<Map<String, String>>> readBaseSources() async {
+  final prefs = await SharedPreferences.getInstance();
+  final cached = prefs.getString('remote_sources_json');
+  if (cached != null) {
+    try {
+      final list = _parseSourceList(jsonDecode(cached));
+      if (list.isNotEmpty) return list;
+    } catch (_) {}
+  }
+  return kSources;
+}
+
+Future<List<Map<String, String>>> readCustomSources() async {
+  final prefs = await SharedPreferences.getInstance();
+  final raw = prefs.getString('custom_sources_json');
+  if (raw == null) return [];
+  try {
+    return _parseSourceList(jsonDecode(raw));
+  } catch (_) {
+    return [];
+  }
+}
+
+Future<List<String>> readDisabledUrls() async {
+  final prefs = await SharedPreferences.getInstance();
+  return prefs.getStringList('disabled_source_urls') ?? [];
+}
+
+/// 生效的源 = 基础源 + 自加源，去掉被关掉的
+Future<List<Map<String, String>>> effectiveSources() async {
+  final base = await readBaseSources();
+  final custom = await readCustomSources();
+  final disabled = await readDisabledUrls();
+  final all = [...base, ...custom];
+  return all.where((s) => !disabled.contains(s['url'])).toList();
+}
+
 // ---------- 数据模型 ----------
 
 class Vod {
@@ -116,10 +185,11 @@ Future<List<Vod>> searchSource(String base, String sourceName, String keyword) a
       .toList();
 }
 
-Future<List<Vod>> searchAll(String keyword, {String? onlySource}) async {
+Future<List<Vod>> searchAll(String keyword,
+    {String? onlySource, required List<Map<String, String>> sources}) async {
   final targets = onlySource == null
-      ? kSources
-      : kSources.where((s) => s['name'] == onlySource).toList();
+      ? sources
+      : sources.where((s) => s['name'] == onlySource).toList();
   final results = await Future.wait(
     targets.map((s) => searchSource(s['url']!, s['name']!, keyword).catchError((_) => <Vod>[])),
   );
@@ -232,6 +302,7 @@ class _HomePageState extends State<HomePage> {
   bool _onlyMandarin = true;
   List<Vod> _results = [];
   List<String> _history = [];
+  List<Map<String, String>> _sources = kSources;
   bool _searching = false;
   String _status = '';
 
@@ -239,6 +310,20 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _loadHistory();
+    _loadSources();
+  }
+
+  /// 启动时拉一次远程源列表，失败就用上次缓存的或内置的
+  Future<void> _loadSources() async {
+    await fetchRemoteSources();
+    final list = await effectiveSources();
+    if (!mounted) return;
+    setState(() {
+      _sources = list;
+      if (_onlySource != null && !_sources.any((s) => s['name'] == _onlySource)) {
+        _onlySource = null;
+      }
+    });
   }
 
   Future<void> _loadHistory() async {
@@ -265,7 +350,7 @@ class _HomePageState extends State<HomePage> {
       _results = [];
     });
     await _saveHistory(keyword);
-    final results = await searchAll(keyword, onlySource: _onlySource);
+    final results = await searchAll(keyword, onlySource: _onlySource, sources: _sources);
     if (!mounted) return;
     setState(() {
       _searching = false;
@@ -299,7 +384,22 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('影搜')),
+      appBar: AppBar(
+        title: const Text('影搜'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.tune),
+            tooltip: '源管理',
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const SourcesPage()),
+              );
+              _loadSources();
+            },
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Padding(
@@ -339,7 +439,7 @@ class _HomePageState extends State<HomePage> {
                   onSelected: (_) => setState(() => _onlySource = null),
                 ),
                 const SizedBox(width: 6),
-                for (final s in kSources)
+                for (final s in _sources)
                   Padding(
                     padding: const EdgeInsets.only(right: 6),
                     child: ChoiceChip(
@@ -675,6 +775,171 @@ class _DetailPageState extends State<DetailPage> {
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+// ---------- 源管理：远程自动更新 + 自加源 ----------
+
+class SourcesPage extends StatefulWidget {
+  const SourcesPage({super.key});
+  @override
+  State<SourcesPage> createState() => _SourcesPageState();
+}
+
+class _SourcesPageState extends State<SourcesPage> {
+  List<Map<String, String>> _base = [];
+  List<Map<String, String>> _custom = [];
+  Set<String> _disabled = {};
+  String _updatedAt = '';
+  bool _refreshing = false;
+  final _nameCtl = TextEditingController();
+  final _urlCtl = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  Future<void> _reload() async {
+    final base = await readBaseSources();
+    final custom = await readCustomSources();
+    final disabled = await readDisabledUrls();
+    final prefs = await SharedPreferences.getInstance();
+    final ts = prefs.getInt('remote_sources_updated_at');
+    if (!mounted) return;
+    setState(() {
+      _base = base;
+      _custom = custom;
+      _disabled = disabled.toSet();
+      _updatedAt = ts == null
+          ? '还没有从网上拉取过'
+          : '上次更新：${DateTime.fromMillisecondsSinceEpoch(ts).toString().substring(0, 16)}';
+    });
+  }
+
+  Future<void> _refreshRemote() async {
+    setState(() => _refreshing = true);
+    final remote = await fetchRemoteSources();
+    await _reload();
+    if (!mounted) return;
+    setState(() => _refreshing = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(remote == null ? '拉取失败，用的还是上次的源' : '源列表已更新到最新')),
+    );
+  }
+
+  Future<void> _toggle(String url, bool on) async {
+    final prefs = await SharedPreferences.getInstance();
+    final next = Set<String>.from(_disabled);
+    if (on) {
+      next.remove(url);
+    } else {
+      next.add(url);
+    }
+    await prefs.setStringList('disabled_source_urls', next.toList());
+    setState(() => _disabled = next);
+  }
+
+  Future<void> _addCustom() async {
+    final name = _nameCtl.text.trim();
+    final url = _urlCtl.text.trim();
+    if (name.isEmpty || !url.startsWith('http')) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('名字和链接都要填，链接要以 http 开头')),
+      );
+      return;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    final list = await readCustomSources();
+    if (!mounted) return;
+    if (list.any((s) => s['url'] == url)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('这个源已经加过了')));
+      return;
+    }
+    list.add({'name': name, 'url': url});
+    await prefs.setString('custom_sources_json', jsonEncode(list));
+    _nameCtl.clear();
+    _urlCtl.clear();
+    await _reload();
+  }
+
+  Future<void> _removeCustom(String url) async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = await readCustomSources();
+    list.removeWhere((s) => s['url'] == url);
+    await prefs.setString('custom_sources_json', jsonEncode(list));
+    await _reload();
+  }
+
+  @override
+  void dispose() {
+    _nameCtl.dispose();
+    _urlCtl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('源管理')),
+      body: ListView(
+        padding: const EdgeInsets.all(12),
+        children: [
+          Text(_updatedAt, style: const TextStyle(color: Colors.grey)),
+          const SizedBox(height: 8),
+          FilledButton(
+            onPressed: _refreshing ? null : _refreshRemote,
+            child: Text(_refreshing ? '正在拉取…' : '从网上拉取最新源'),
+          ),
+          const SizedBox(height: 16),
+          const Text('官方源', style: TextStyle(fontWeight: FontWeight.bold)),
+          for (final s in _base)
+            SwitchListTile(
+              title: Text(s['name']!),
+              subtitle: Text(s['url']!, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+              value: !_disabled.contains(s['url']),
+              onChanged: (v) => _toggle(s['url']!, v),
+            ),
+          const SizedBox(height: 8),
+          const Text('自己加的源', style: TextStyle(fontWeight: FontWeight.bold)),
+          for (final s in _custom)
+            ListTile(
+              title: Text(s['name']!),
+              subtitle: Text(s['url']!, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+              trailing: IconButton(
+                icon: const Icon(Icons.delete),
+                onPressed: () => _removeCustom(s['url']!),
+              ),
+            ),
+          const SizedBox(height: 16),
+          const Text('添加新源', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _nameCtl,
+            decoration: const InputDecoration(
+              hintText: '源名字，比如 光速',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _urlCtl,
+            decoration: const InputDecoration(
+              hintText: '源地址，以 https 开头，到 /vod/ 为止',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton(onPressed: _addCustom, child: const Text('添加')),
+          const SizedBox(height: 8),
+          const Text(
+            '源地址是苹果 CMS 的接口地址，一般以 /api.php/provide/vod/ 结尾。',
+            style: TextStyle(color: Colors.grey, fontSize: 12),
+          ),
+        ],
       ),
     );
   }
