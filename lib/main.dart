@@ -671,7 +671,7 @@ class _SearchPageState extends State<SearchPage> {
                     textInputAction: TextInputAction.search,
                     onSubmitted: (_) => _doSearch(),
                     decoration: InputDecoration(
-                      hintText: '搜片名，比如 哪吒',
+                      hintText: '搜片名',
                       filled: true,
                       fillColor: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF242424) : Colors.white,
                       border: OutlineInputBorder(
